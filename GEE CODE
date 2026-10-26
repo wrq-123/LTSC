@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+import pandas as pd
+
+INPUT = Path(r"F:\新\大论文第二篇\04_stable_anchors\StableAnchor_Samples_2018_2024.csv")
+OUT_DIR = INPUT.parent / "gee_upload"
+
+KEEP = [
+    "anchor_id",
+    "label",
+    "patch_id",
+    "spatial_block_id",
+    "longitude",
+    "latitude",
+]
+
+def main():
+    if not INPUT.is_file():
+        raise FileNotFoundError(f"未找到输入文件：{INPUT}")
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(INPUT, encoding="utf-8-sig")
+    df.columns = [str(c).strip() for c in df.columns]
+
+    missing = [c for c in KEEP if c not in df.columns]
+    if missing:
+        raise ValueError(f"缺少必要字段：{missing}\n现有字段：{list(df.columns)}")
+
+    out = df[KEEP].copy()
+    out["longitude"] = pd.to_numeric(out["longitude"], errors="coerce")
+    out["latitude"] = pd.to_numeric(out["latitude"], errors="coerce")
+    out["label"] = pd.to_numeric(out["label"], errors="coerce")
+
+    before = len(out)
+    out = out.dropna(subset=["longitude", "latitude", "label"])
+    out = out[
+        out["longitude"].between(-180, 180)
+        & out["latitude"].between(-90, 90)
+        & out["label"].isin([0, 1])
+    ].copy()
+
+    out["label"] = out["label"].astype("int8")
+    for col in ["anchor_id", "patch_id", "spatial_block_id"]:
+        out[col] = out[col].astype(str).str.replace(r"[\r\n\t,]", "_", regex=True)
+
+    duplicate_count = int(out.duplicated("anchor_id").sum())
+    out = out.drop_duplicates("anchor_id").reset_index(drop=True)
+
+    minimal = OUT_DIR / "StableAnchors_GEE_Minimal.csv"
+    out.to_csv(minimal, index=False, encoding="utf-8", lineterminator="\n")
+
+    midpoint = (len(out) + 1) // 2
+    part1 = OUT_DIR / "StableAnchors_GEE_Part1.csv"
+    part2 = OUT_DIR / "StableAnchors_GEE_Part2.csv"
+    out.iloc[:midpoint].to_csv(part1, index=False, encoding="utf-8", lineterminator="\n")
+    out.iloc[midpoint:].to_csv(part2, index=False, encoding="utf-8", lineterminator="\n")
+
+    audit = OUT_DIR / "StableAnchors_Upload_Audit.txt"
+    audit.write_text(
+        "\n".join([
+            f"原始行数: {before}",
+            f"清理后行数: {len(out)}",
+            f"删除无效/异常行数: {before - len(out)}",
+            f"重复 anchor_id 数: {duplicate_count}",
+            f"字段数: {len(out.columns)}",
+            f"字段: {', '.join(out.columns)}",
+            f"灌丛(label=1): {(out['label'] == 1).sum()}",
+            f"非灌丛(label=0): {(out['label'] == 0).sum()}",
+            f"完整文件大小(MB): {minimal.stat().st_size / 1024 / 1024:.3f}",
+            f"Part1大小(MB): {part1.stat().st_size / 1024 / 1024:.3f}",
+            f"Part2大小(MB): {part2.stat().st_size / 1024 / 1024:.3f}",
+        ]),
+        encoding="utf-8"
+    )
+
+    print(audit.read_text(encoding="utf-8"))
+    print(f"\n输出目录：{OUT_DIR}")
+
+if __name__ == "__main__":
+    main()
